@@ -28,6 +28,12 @@ import torch.nn as nn
 from torch.nn import CrossEntropyLoss, MSELoss
 
 from .activations import gelu_new, silu
+from .adapter_openai import (
+    OpenAIGPTModelAdaptersMixin,
+    OpenAIGPTBlockAdaptersMixin
+)
+from .adapter_model_mixin import ModelWithHeadsAdaptersMixin
+
 from .configuration_openai import OpenAIGPTConfig
 from .file_utils import (
     ModelOutput,
@@ -245,16 +251,21 @@ class MLP(nn.Module):
         return self.dropout(h2)
 
 
-class Block(nn.Module):
+class Block(OpenAIGPTBlockAdaptersMixin, nn.Module):
     def __init__(self, n_ctx, config, scale=False):
         super().__init__()
+        self.config = config
+
         nx = config.n_embd
         self.attn = Attention(nx, n_ctx, config, scale)
         self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
+        
         self.mlp = MLP(4 * nx, config)
         self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
 
-    def forward(self, x, attention_mask=None, head_mask=None, output_attentions=False):
+        self._init_adapter_modules()
+
+    def forward(self, x, attention_mask=None, head_mask=None, output_attentions=False, adapter_names=None):
         attn_outputs = self.attn(
             x,
             attention_mask=attention_mask,
@@ -262,11 +273,15 @@ class Block(nn.Module):
             output_attentions=output_attentions,
         )
         a = attn_outputs[0]
+        n = self.attention_adapters.adapters_forward(
+            a, x, adapter_names=adapter_names
+        )  # (bs, seq_length, dim)
 
-        n = self.ln_1(x + a)
         m = self.mlp(n)
-        h = self.ln_2(n + m)
-
+        h = self.output_adapters.adapters_forward(
+            m, n, adapter_names=adapter_names
+        )  # (bs, seq_length, dim)
+        
         outputs = [h] + attn_outputs[1:]
         return outputs
 
@@ -402,7 +417,7 @@ OPENAI_GPT_INPUTS_DOCSTRING = r"""
     "The bare OpenAI GPT transformer model outputting raw hidden-states without any specific head on top.",
     OPENAI_GPT_START_DOCSTRING,
 )
-class OpenAIGPTModel(OpenAIGPTPreTrainedModel):
+class OpenAIGPTModel(OpenAIGPTModelAdaptersMixin, OpenAIGPTPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
 
@@ -412,6 +427,9 @@ class OpenAIGPTModel(OpenAIGPTPreTrainedModel):
         self.h = nn.ModuleList([Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
 
         self.register_buffer("position_ids", torch.arange(config.n_positions))
+
+        self._init_adapter_modules()
+
         self.init_weights()
 
     def get_input_embeddings(self):
@@ -444,6 +462,7 @@ class OpenAIGPTModel(OpenAIGPTPreTrainedModel):
         inputs_embeds=None,
         output_attentions=None,
         output_hidden_states=None,
+        adapter_names=None,
         return_dict=None,
     ):
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -451,6 +470,12 @@ class OpenAIGPTModel(OpenAIGPTPreTrainedModel):
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        # override the default active adapters with those passed in the method call
+        adapter_names = adapter_names or self.active_adapters
+        # some warnings if we don't use available adapters
+        if not adapter_names and self.has_adapters():
+            logger.warning("There are adapters available but none are passed to model.forward")
+
 
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
@@ -505,7 +530,13 @@ class OpenAIGPTModel(OpenAIGPTPreTrainedModel):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states.view(*output_shape),)
 
-            outputs = block(hidden_states, attention_mask, head_mask[i], output_attentions=output_attentions)
+            outputs = block(
+                hidden_states, 
+                attention_mask, 
+                head_mask[i], 
+                output_attentions=output_attentions,
+                adapter_names=adapter_names
+                )
             hidden_states = outputs[0]
             if output_attentions:
                 all_attentions = all_attentions + (outputs[1],)
@@ -532,7 +563,7 @@ class OpenAIGPTModel(OpenAIGPTPreTrainedModel):
     """,
     OPENAI_GPT_START_DOCSTRING,
 )
-class OpenAIGPTLMHeadModel(OpenAIGPTPreTrainedModel):
+class OpenAIGPTLMHeadModel(ModelWithHeadsAdaptersMixin, OpenAIGPTPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.transformer = OpenAIGPTModel(config)
@@ -561,6 +592,7 @@ class OpenAIGPTLMHeadModel(OpenAIGPTPreTrainedModel):
         labels=None,
         output_attentions=None,
         output_hidden_states=None,
+        adapter_names=None,
         return_dict=None,
     ):
         r"""
@@ -580,9 +612,13 @@ class OpenAIGPTLMHeadModel(OpenAIGPTPreTrainedModel):
             inputs_embeds=inputs_embeds,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            adapter_names=adapter_names,
             return_dict=return_dict,
         )
         hidden_states = transformer_outputs[0]
+        # hidden_states = self.transformer.invertible_adapters_forward( #TODO li3 have to find out how the invertible adapters work.
+        #     hidden_states, adapter_names=adapter_names, rev=True
+        # )
         lm_logits = self.lm_head(hidden_states)
 
         loss = None

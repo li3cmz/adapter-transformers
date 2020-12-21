@@ -15,6 +15,7 @@
 # limitations under the License.
 """ OpenAI GPT configuration """
 
+from .adapter_config import ModelAdaptersConfig
 from .configuration_utils import PretrainedConfig
 from .utils import logging
 
@@ -155,6 +156,13 @@ class OpenAIGPTConfig(PretrainedConfig):
         self.summary_activation = summary_activation
         self.summary_first_dropout = summary_first_dropout
         self.summary_proj_to_labels = summary_proj_to_labels
+
+        # adapter configuration
+        adapter_config_dict = kwargs.pop("adapters", None)
+        if adapter_config_dict:
+            self.adapters = ModelAdaptersConfig(**adapter_config_dict)
+        else:
+            self.adapters = ModelAdaptersConfig()
 
     @property
     def max_position_embeddings(self):
