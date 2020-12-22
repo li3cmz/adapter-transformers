@@ -19,11 +19,7 @@ class Trainer:
         self.model = model
         self.optimizer = optimizer
         
-    def train(self):
-
-        input_ids = torch.ones(2, 128).long()
-        token_type_ids = input_ids
-        lm_labels = torch.zeros(2, 128).long()
+    def train(self, input_ids, token_type_ids, lm_labels):
         self.model.train()
 
         (lm_loss), *_ = self.model(input_ids, labels=lm_labels, token_type_ids=token_type_ids)
@@ -68,12 +64,16 @@ class AdapterTrainingTest(unittest.TestCase):
 
                 state_dict_pre = copy.deepcopy(model.state_dict())
 
+                input_ids = torch.ones(2, 128).long()
+                token_type_ids = input_ids
+                lm_labels = torch.zeros(2, 128).long()
+
                 optimizer = AdamW([{'params': model.parameters(), 'initial_lr': 5e-4}], lr=5e-4, correct_bias=True)
                 trainer = Trainer(
                     model=model,
                     optimizer=optimizer
                 )
-                trainer.train()
+                trainer.train(input_ids, token_type_ids, lm_labels)
 
                 for ((k1, v1), (k2, v2)) in zip(state_dict_pre.items(), model.state_dict().items()):
                     if "test1" in k1:
