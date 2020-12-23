@@ -1,3 +1,4 @@
+import os
 import copy
 import unittest
 
@@ -27,6 +28,7 @@ class Trainer:
         loss.backward()
         self.optimizer.step()
         self.optimizer.zero_grad()
+
 
 @require_torch
 class AdapterTrainingTest(unittest.TestCase):
@@ -80,6 +82,11 @@ class AdapterTrainingTest(unittest.TestCase):
                         self.assertFalse(torch.equal(v1, v2))
                     else:
                         self.assertTrue(torch.equal(v1, v2))
+                
+                save_path="adapters/text-task/test1/"
+                if not os.path.exists(save_path):
+                    os.makedirs(save_path)
+                model.save_adapter(save_path, "test1")
 
 if __name__ == "__main__":
     unittest.main()
